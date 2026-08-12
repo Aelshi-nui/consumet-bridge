@@ -6,7 +6,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "@consumet/extensions": "1.8.8",
-    "express": "4.21.2"
+    "express": "4.21.2",
+    "puppeteer-core": "22.15.0"
   }
 }
