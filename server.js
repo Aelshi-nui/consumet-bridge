@@ -8,38 +8,40 @@ const puppeteer = require("puppeteer-core");
 const app = express();
 const PORT = parseInt(process.env.PORT || "7860", 10);
 
-// Find chromium executable
+// The Playwright Docker image installs Chromium at /ms-playwright
+// Find the actual executable path
 function findChromium() {
-  const candidates = [
-    process.env.CHROMIUM_PATH,
-    "/usr/bin/chromium-browser",
-    "/usr/bin/chromium",
-    "/usr/bin/google-chrome",
-    "/usr/bin/google-chrome-stable",
-    "/snap/bin/chromium",
+  const bases = [
+    "/ms-playwright",
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
   ].filter(Boolean);
-  for (const c of candidates) {
-    try { execSync("test -f " + c); return c; } catch {}
+
+  for (const base of bases) {
+    try {
+      const result = execSync(`find "${base}" -name "chrome" -o -name "chromium" -o -name "headless_shell" -o -name "chrome-headless-shell" 2>/dev/null | head -1`, { encoding: "utf8" }).trim();
+      if (result) return result;
+    } catch {}
   }
-  // Try which
-  try { return execSync("which chromium-browser || which chromium || which google-chrome", { encoding: "utf8" }).trim(); } catch {}
-  // Try find
-  try { return execSync("find /usr -name 'chromium*' -type f 2>/dev/null | head -1", { encoding: "utf8" }).trim(); } catch {}
+
+  // Fallback: system paths
+  for (const p of ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome"]) {
+    try { execSync("test -f " + p); return p; } catch {}
+  }
   return null;
 }
 
 const CHROMIUM = findChromium();
-console.log("Chromium path:", CHROMIUM || "NOT FOUND");
+console.log("Chromium:", CHROMIUM || "NOT FOUND");
 
 let browser = null;
-let page = null;
+let _page = null;
 
 async function getBrowser() {
   if (!browser) {
-    if (!CHROMIUM) throw new Error("No chromium found");
+    if (!CHROMIUM) throw new Error("No chromium executable found");
     browser = await puppeteer.launch({
       executablePath: CHROMIUM,
-      headless: "new",
+      headless: true,
       args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage","--disable-gpu","--single-process"],
     });
   }
@@ -47,15 +49,21 @@ async function getBrowser() {
 }
 
 async function getPage() {
-  if (!page || page.isClosed()) {
+  if (!_page || _page.isClosed()) {
     const b = await getBrowser();
-    page = await b.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-    console.log("Getting CF clearance...");
-    await page.goto("https://animepahe.ru", { waitUntil: "networkidle0", timeout: 40000 });
-    console.log("animepahe ready:", await page.title());
+    _page = await b.newPage();
+    await _page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+    console.log("Navigating to animepahe.ru for CF clearance...");
+    await _page.goto("https://animepahe.ru", { waitUntil: "networkidle0", timeout: 45000 });
+    const title = await _page.title();
+    console.log("animepahe title:", title);
+    if (title.toLowerCase().includes("just a moment") || title === "...") {
+      console.log("CF challenge detected, waiting...");
+      await _page.waitForFunction(() => !document.title.toLowerCase().includes("just a moment") && document.title !== "...", { timeout: 30000 });
+      console.log("CF cleared:", await _page.title());
+    }
   }
-  return page;
+  return _page;
 }
 
 const _c = new Map();
@@ -72,8 +80,9 @@ async function paheApi(path) {
     const res = await fetch(url, { credentials: "include" });
     return { status: res.status, text: await res.text() };
   }, PAHE + path);
-  if (r.status !== 200) throw new Error("animepahe " + r.status);
-  return JSON.parse(r.text);
+  if (r.status !== 200) throw new Error("animepahe " + r.status + ": " + r.text.slice(0, 100));
+  try { return JSON.parse(r.text); }
+  catch { throw new Error("animepahe returned non-JSON: " + r.text.slice(0, 100)); }
 }
 
 app.get("/health", (_req, res) => res.json({ ok: true, chromium: CHROMIUM }));
@@ -125,6 +134,6 @@ app.get("/anime/:b/watch", async (req, res) => {
 
 app.listen(PORT, "0.0.0.0", async () => {
   console.log("Bridge :" + PORT);
-  try { await getPage(); console.log("CF clearance OK."); }
-  catch (e) { console.error("CF prefetch failed:", e.message); }
+  try { await getPage(); console.log("Ready."); }
+  catch (e) { console.error("Prefetch failed:", e.message); }
 });
