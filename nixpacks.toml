@@ -1,5 +1,5 @@
-[phases.build]
-cmds = ["npm install"]
+[phases.setup]
+aptPkgs = ["chromium-browser"]
 
 [start]
 cmd = "node server.js"
