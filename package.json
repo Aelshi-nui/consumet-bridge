@@ -4,7 +4,7 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=/app/.playwright npx playwright install chromium --with-deps",
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=/app/.playwright npx playwright@1.48.2 install chromium --with-deps",
     "start": "node server.js"
   },
   "dependencies": {
@@ -12,7 +12,7 @@
     "aniwatch": "2.27.9",
     "express": "4.21.2",
     "global-agent": "4.1.3",
-    "playwright-core": "1.49.1",
+    "playwright-core": "1.48.2",
     "playwright-extra": "4.3.6",
     "puppeteer-extra-plugin-stealth": "2.11.2"
   }
