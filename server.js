@@ -3,7 +3,6 @@
 
 const fs   = require("node:fs");
 const path = require("node:path");
-const https = require("node:https");
 
 const paheJs = path.join(__dirname, "node_modules/@consumet/extensions/dist/providers/anime/animepahe.js");
 try {
@@ -29,16 +28,17 @@ const cset = (k, d, ms) => _c.set(k, { d, x: Date.now() + ms });
 const ok   = (res, d) => res.json(d);
 const fail = (res, m, s = 500) => res.status(s).json({ message: String(m) });
 
-// Debug: raw API response from animepahe
-app.get("/debug", (_req, res) => {
-  const url = "https://animepahe.ru/api?m=search&q=naruto";
-  const req = https.get(url, { headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://animepahe.ru" } }, (resp) => {
-    let body = "";
-    resp.on("data", d => body += d);
-    resp.on("end", () => res.json({ status: resp.statusCode, body: body.slice(0, 500) }));
-  });
-  req.on("error", e => res.json({ error: e.message }));
-  req.setTimeout(8000, () => { req.destroy(); res.json({ error: "timeout" }); });
+// Debug: use fetch to follow redirects and see final response
+app.get("/debug", async (_req, res) => {
+  try {
+    const r = await fetch("https://animepahe.ru/api?m=search&q=naruto", {
+      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0.0.0", "Referer": "https://animepahe.ru" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await r.text();
+    res.json({ status: r.status, ok: r.ok, url: r.url, body: text.slice(0, 400) });
+  } catch(e) { res.json({ error: e.message }); }
 });
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -92,4 +92,4 @@ async function handleWatch(req, res) {
   app.get("/anime/" + b + "/watch",      handleWatch);
 });
 
-app.listen(PORT, "0.0.0.0", () => console.log("Consumet bridge :" + PORT + " CJS"));
+app.listen(PORT, "0.0.0.0", () => console.log("Consumet bridge :" + PORT));
