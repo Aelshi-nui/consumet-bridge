@@ -1,24 +1,46 @@
 
 "use strict";
 
+const { execSync } = require("node:child_process");
 const express = require("express");
 const puppeteer = require("puppeteer-core");
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "7860", 10);
 
-// System chromium installed by nixpacks
-const CHROMIUM = process.env.CHROMIUM_PATH || "/usr/bin/chromium-browser";
+// Find chromium executable
+function findChromium() {
+  const candidates = [
+    process.env.CHROMIUM_PATH,
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/snap/bin/chromium",
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try { execSync("test -f " + c); return c; } catch {}
+  }
+  // Try which
+  try { return execSync("which chromium-browser || which chromium || which google-chrome", { encoding: "utf8" }).trim(); } catch {}
+  // Try find
+  try { return execSync("find /usr -name 'chromium*' -type f 2>/dev/null | head -1", { encoding: "utf8" }).trim(); } catch {}
+  return null;
+}
+
+const CHROMIUM = findChromium();
+console.log("Chromium path:", CHROMIUM || "NOT FOUND");
 
 let browser = null;
 let page = null;
 
 async function getBrowser() {
   if (!browser) {
+    if (!CHROMIUM) throw new Error("No chromium found");
     browser = await puppeteer.launch({
       executablePath: CHROMIUM,
       headless: "new",
-      args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage","--disable-gpu"],
+      args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage","--disable-gpu","--single-process"],
     });
   }
   return browser;
@@ -29,8 +51,7 @@ async function getPage() {
     const b = await getBrowser();
     page = await b.newPage();
     await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-    // Navigate to animepahe to get the CF cookie
-    console.log("Navigating to animepahe to get CF clearance...");
+    console.log("Getting CF clearance...");
     await page.goto("https://animepahe.ru", { waitUntil: "networkidle0", timeout: 40000 });
     console.log("animepahe ready:", await page.title());
   }
@@ -47,16 +68,15 @@ const PAHE = "https://animepahe.ru";
 
 async function paheApi(path) {
   const pg = await getPage();
-  const url = PAHE + path;
-  const resp = await pg.evaluate(async (u) => {
-    const r = await fetch(u, { credentials: "include" });
-    return { status: r.status, text: await r.text() };
-  }, url);
-  if (resp.status !== 200) throw new Error(`animepahe returned ${resp.status}`);
-  return JSON.parse(resp.text);
+  const r = await pg.evaluate(async (url) => {
+    const res = await fetch(url, { credentials: "include" });
+    return { status: res.status, text: await res.text() };
+  }, PAHE + path);
+  if (r.status !== 200) throw new Error("animepahe " + r.status);
+  return JSON.parse(r.text);
 }
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/health", (_req, res) => res.json({ ok: true, chromium: CHROMIUM }));
 
 app.get("/anime/:b/top-airing", async (_req, res) => {
   try {
@@ -75,8 +95,7 @@ app.get("/anime/:b/info", async (req, res) => {
       if (!r.data || !r.data.length) return fail(res, "Not found", 404);
       paheId = r.data[0].session;
     }
-    const eps = [];
-    let pg = 1;
+    const eps = []; let pg = 1;
     while (true) {
       const d = await paheApi("/api?m=release&id=" + paheId + "&sort=episode_asc&page=" + pg);
       if (!d.data || !d.data.length) break;
@@ -97,9 +116,7 @@ app.get("/anime/:b/watch", async (req, res) => {
   try {
     const [paheId, epSession] = episodeId.split("/");
     const d = await paheApi("/api?m=links&id=" + paheId + "&session=" + epSession + "&p=kwik");
-    const sources = Object.entries(d.data || {}).map(([q, info]) => ({
-      url: info.kwik || "", quality: q, isM3U8: false,
-    })).filter(s => s.url);
+    const sources = Object.entries(d.data || {}).map(([q, info]) => ({ url: info.kwik || "", quality: q, isM3U8: false })).filter(s => s.url);
     if (!sources.length) return fail(res, "No sources", 404);
     const result = { sources, subtitles: [] };
     cset(ck, result, 180000); ok(res, result);
@@ -107,7 +124,7 @@ app.get("/anime/:b/watch", async (req, res) => {
 });
 
 app.listen(PORT, "0.0.0.0", async () => {
-  console.log("Bridge :" + PORT + " puppeteer+system-chromium");
-  try { await getPage(); console.log("CF clearance obtained."); }
+  console.log("Bridge :" + PORT);
+  try { await getPage(); console.log("CF clearance OK."); }
   catch (e) { console.error("CF prefetch failed:", e.message); }
 });
