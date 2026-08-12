@@ -4,7 +4,7 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=/app/.playwright npx playwright@1.48.2 install chromium --with-deps",
+    "postinstall": "PLAYWRIGHT_BROWSERS_PATH=./node_modules/.playwright npx playwright@1.48.2 install chromium --with-deps",
     "start": "node server.js"
   },
   "dependencies": {
