@@ -1,14 +1,10 @@
 
-/**
- * Animora Consumet Bridge — CJS
- * CommonJS so domain patch runs before require('@consumet/extensions').
- */
 "use strict";
 
 const fs   = require("node:fs");
 const path = require("node:path");
+const https = require("node:https");
 
-// Patch dead domain BEFORE require('@consumet/extensions')
 const paheJs = path.join(__dirname, "node_modules/@consumet/extensions/dist/providers/anime/animepahe.js");
 try {
   const src = fs.readFileSync(paheJs, "utf8");
@@ -17,10 +13,8 @@ try {
     .replaceAll("animepahe.me", "animepahe.ru")
     .replaceAll("https://animepahe.com", "https://animepahe.ru");
   fs.writeFileSync(paheJs, patched);
-  console.log("Patched animepahe domain OK");
-} catch (e) {
-  console.error("Patch failed:", e.message);
-}
+  console.log("Patched OK");
+} catch (e) { console.error("Patch failed:", e.message); }
 
 const express   = require("express");
 const { ANIME } = require("@consumet/extensions");
@@ -34,6 +28,20 @@ const cget = k => { const e = _c.get(k); if (!e || Date.now() > e.x) { _c.delete
 const cset = (k, d, ms) => _c.set(k, { d, x: Date.now() + ms });
 const ok   = (res, d) => res.json(d);
 const fail = (res, m, s = 500) => res.status(s).json({ message: String(m) });
+
+// Debug: raw API response from animepahe
+app.get("/debug", (_req, res) => {
+  const url = "https://animepahe.ru/api?m=search&q=naruto";
+  const req = https.get(url, { headers: { "User-Agent": "Mozilla/5.0", "Referer": "https://animepahe.ru" } }, (resp) => {
+    let body = "";
+    resp.on("data", d => body += d);
+    resp.on("end", () => res.json({ status: resp.statusCode, body: body.slice(0, 500) }));
+  });
+  req.on("error", e => res.json({ error: e.message }));
+  req.setTimeout(8000, () => { req.destroy(); res.json({ error: "timeout" }); });
+});
+
+app.get("/health", (_req, res) => res.json({ ok: true }));
 
 async function resolvePaheId(rawId) {
   const ck = "pid:" + rawId; const hit = cget(ck); if (hit) return hit;
@@ -59,17 +67,12 @@ async function handleInfo(req, res) {
     const info = await pahe.fetchAnimeInfo(paheId);
     if (!info) return fail(res, "Not found", 404);
     const title = typeof info.title === "string" ? info.title : ((info.title && info.title.english) || String(info.title));
-    const result = {
-      id: paheId, title,
-      episodes: (info.episodes || []).map(ep => ({ id: ep.id, number: ep.number, title: null, isFiller: false })),
-    };
+    const result = { id: paheId, title, episodes: (info.episodes || []).map(ep => ({ id: ep.id, number: ep.number, title: null, isFiller: false })) };
     cset(ck, result, 21600000); ok(res, result);
   } catch (e) { fail(res, e.message); }
 }
 
-function handleServers(_req, res) {
-  ok(res, { sub: [{ name: "kwik", url: "" }], dub: [], raw: [] });
-}
+function handleServers(_req, res) { ok(res, { sub: [{ name: "kwik", url: "" }], dub: [], raw: [] }); }
 
 async function handleWatch(req, res) {
   const { episodeId } = req.query; if (!episodeId) return fail(res, "episodeId required", 400);
@@ -77,18 +80,10 @@ async function handleWatch(req, res) {
   try {
     const data = await pahe.fetchEpisodeSources(episodeId);
     if (!data || !data.sources || !data.sources.length) return fail(res, "No sources", 404);
-    const result = {
-      sources: data.sources.map(s => ({
-        url: s.url, quality: s.quality || "default",
-        isM3U8: s.isM3U8 !== undefined ? s.isM3U8 : Boolean(s.url && s.url.includes(".m3u8")),
-      })),
-      subtitles: [],
-    };
+    const result = { sources: data.sources.map(s => ({ url: s.url, quality: s.quality || "default", isM3U8: s.isM3U8 !== undefined ? s.isM3U8 : Boolean(s.url && s.url.includes(".m3u8")) })), subtitles: [] };
     cset(ck, result, 180000); ok(res, result);
   } catch (e) { fail(res, e.message); }
 }
-
-app.get("/health", (_req, res) => res.json({ ok: true }));
 
 ["zoro", "gogoanime"].forEach(b => {
   app.get("/anime/" + b + "/top-airing", handleTopAiring);
