@@ -3,11 +3,12 @@ set -e
 cd /tmp
 echo 'Downloading bridge...'
 curl -sL https://raw.githubusercontent.com/Aelshi-nui/consumet-bridge/main/server.js -o server.js
-cat > package.json <<'PKGJSON'
+cat > package.json << 'PKGJSON'
 {
   "type": "module",
   "dependencies": {
     "express": "4.21.2",
+    "playwright-core": "1.48.2",
     "playwright-extra": "4.3.6",
     "puppeteer-extra-plugin-stealth": "2.11.2"
   }
