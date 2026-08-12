@@ -4,55 +4,80 @@
 const { execSync } = require("node:child_process");
 const express    = require("express");
 const puppeteer  = require("puppeteer-extra");
-const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-
-puppeteer.use(StealthPlugin());
+const Stealth    = require("puppeteer-extra-plugin-stealth");
+puppeteer.use(Stealth());
 
 const app  = express();
 const PORT = parseInt(process.env.PORT || "7860", 10);
 
 function findChromium() {
   try {
-    const r = execSync(`find /ms-playwright -path "*/chromium*" -name "chrome" 2>/dev/null | head -1`, { encoding: "utf8" }).trim();
-    if (r) return r;
-  } catch {}
-  return null;
+    return execSync(
+      `find /ms-playwright -path "*/chromium*" -name "chrome" 2>/dev/null | head -1`,
+      { encoding: "utf8" }
+    ).trim() || null;
+  } catch { return null; }
 }
 
 const CHROMIUM = findChromium();
 console.log("Chromium:", CHROMIUM || "NOT FOUND");
 
-let browser = null;
-let _page   = null;
-let cfDone  = false;
+let _browser = null;
 
-async function getBrowser() {
-  if (!browser) {
-    browser = await puppeteer.launch({
+async function launch() {
+  if (!_browser) {
+    _browser = await puppeteer.launch({
       executablePath: CHROMIUM,
       headless: true,
-      args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage","--disable-gpu","--single-process"],
+      args: ["--no-sandbox","--disable-setuid-sandbox","--disable-dev-shm-usage",
+             "--disable-gpu","--single-process","--window-size=1280,800"],
     });
   }
-  return browser;
+  return _browser;
 }
 
-async function getPage() {
-  if (!_page || _page.isClosed()) {
-    const b = await getBrowser();
-    _page = await b.newPage();
-    await _page.setUserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-    await _page.setViewport({ width: 1280, height: 800 });
-    console.log("Navigating to animepahe.ru...");
-    await _page.goto("https://animepahe.ru", { waitUntil: "domcontentloaded", timeout: 45000 }).catch(e => console.error("goto:", e.message));
-    for (let i = 0; i < 40; i++) {
-      const t = await _page.title().catch(() => "...");
-      if (t && t !== "..." && !t.toLowerCase().includes("just a moment")) { cfDone = true; console.log("CF ok:", t); break; }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-    if (!cfDone) { cfDone = true; console.log("CF timeout, proceeding. Title:", await _page.title().catch(() => "?")); }
+/**
+ * Navigate a fresh page to `url`, intercept the matching JSON response,
+ * return the parsed body. Timeout 40s.
+ */
+async function intercept(url) {
+  const browser = await launch();
+  const page = await browser.newPage();
+  await page.setUserAgent(
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  );
+  await page.setViewport({ width: 1280, height: 800 });
+
+  try {
+    const result = await Promise.race([
+      new Promise((resolve, reject) => {
+        setTimeout(() => reject(new Error("timeout 40s")), 40000);
+
+        page.on("response", async (resp) => {
+          if (resp.url() === url && resp.status() === 200) {
+            try {
+              const body = await resp.text();
+              resolve(JSON.parse(body));
+            } catch (e) {
+              reject(new Error("JSON parse: " + e.message));
+            }
+          }
+        });
+
+        page.goto(url, { waitUntil: "networkidle0", timeout: 38000 })
+          .then(async () => {
+            // If networkidle fired but we haven't resolved yet,
+            // try reading the page body directly (plain JSON response page).
+            const raw = await page.evaluate(() => document.body.innerText).catch(() => "");
+            try { resolve(JSON.parse(raw)); } catch { /* already resolved or will timeout */ }
+          })
+          .catch(reject);
+      }),
+    ]);
+    return result;
+  } finally {
+    await page.close().catch(() => {});
   }
-  return _page;
 }
 
 const _c = new Map();
@@ -60,23 +85,14 @@ const cget = k => { const e = _c.get(k); if (!e || Date.now() > e.x) { _c.delete
 const cset = (k, d, ms) => _c.set(k, { d, x: Date.now() + ms });
 const ok   = (res, d) => res.json(d);
 const fail = (res, m, s = 500) => res.status(s).json({ message: String(m) });
+
 const PAHE = "https://animepahe.ru";
 
-async function paheApi(path) {
-  const pg = await getPage();
-  const r  = await pg.evaluate(async (u) => {
-    const res = await fetch(u, { credentials: "include" });
-    return { status: res.status, text: await res.text() };
-  }, PAHE + path);
-  if (r.status !== 200) throw new Error("animepahe " + r.status);
-  try { return JSON.parse(r.text); } catch { throw new Error("non-JSON: " + r.text.slice(0, 200)); }
-}
-
-app.get("/health", (_req, res) => res.json({ ok: true, chromium: CHROMIUM, cf: cfDone }));
+app.get("/health", (_req, res) => res.json({ ok: true, chromium: !!CHROMIUM }));
 
 app.get("/anime/:b/top-airing", async (_req, res) => {
   try {
-    const d = await paheApi("/api?m=release&sort=date_last_added&page=1");
+    const d = await intercept(`${PAHE}/api?m=release&sort=date_last_added&page=1`);
     ok(res, { results: (d.data || []).slice(0,10).map(i => ({ id: i.anime_session, title: i.anime_title })) });
   } catch (e) { fail(res, e.message); }
 });
@@ -87,15 +103,15 @@ app.get("/anime/:b/info", async (req, res) => {
   try {
     let paheId = id;
     if (/^\d+$/.test(id)) {
-      const r = await paheApi("/api?m=search&q=" + encodeURIComponent(id));
+      const r = await intercept(`${PAHE}/api?m=search&q=${encodeURIComponent(id)}`);
       if (!r.data || !r.data.length) return fail(res, "Not found", 404);
       paheId = r.data[0].session;
     }
     const eps = []; let pg = 1;
     while (true) {
-      const d = await paheApi("/api?m=release&id=" + paheId + "&sort=episode_asc&page=" + pg);
+      const d = await intercept(`${PAHE}/api?m=release&id=${paheId}&sort=episode_asc&page=${pg}`);
       if (!d.data || !d.data.length) break;
-      for (const ep of d.data) eps.push({ id: paheId + "/" + ep.session, number: ep.episode, title: null, isFiller: false });
+      for (const ep of d.data) eps.push({ id: `${paheId}/${ep.session}`, number: ep.episode, title: null, isFiller: false });
       if (!d.next_page_url || eps.length >= (d.total || 99999)) break;
       if (++pg > 50) break;
     }
@@ -111,14 +127,13 @@ app.get("/anime/:b/watch", async (req, res) => {
   const ck = "w:" + episodeId; const c = cget(ck); if (c) return ok(res, c);
   try {
     const [paheId, epSession] = episodeId.split("/");
-    const d = await paheApi("/api?m=links&id=" + paheId + "&session=" + epSession + "&p=kwik");
-    const sources = Object.entries(d.data || {}).map(([q, info]) => ({ url: info.kwik || "", quality: q, isM3U8: false })).filter(s => s.url);
+    const d = await intercept(`${PAHE}/api?m=links&id=${paheId}&session=${epSession}&p=kwik`);
+    const sources = Object.entries(d.data || {})
+      .map(([q, info]) => ({ url: info.kwik || "", quality: q, isM3U8: false }))
+      .filter(s => s.url);
     if (!sources.length) return fail(res, "No sources", 404);
     cset(ck, { sources, subtitles: [] }, 180000); ok(res, { sources, subtitles: [] });
   } catch (e) { fail(res, e.message); }
 });
 
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log("Bridge :" + PORT + " stealth");
-  try { await getPage(); } catch (e) { console.error("Init:", e.message); }
-});
+app.listen(PORT, "0.0.0.0", () => console.log(`Bridge :${PORT}`));
